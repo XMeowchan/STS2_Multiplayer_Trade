@@ -1,0 +1,583 @@
+Set-StrictMode -Version Latest
+
+function Resolve-ExistingPath {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    return (Resolve-Path -LiteralPath $Path).Path
+}
+
+function Get-ModManifestPath {
+    param(
+        [Parameter(Mandatory)]
+        [string]$ProjectRoot
+    )
+
+    $candidates = Get-ChildItem -LiteralPath $ProjectRoot -Filter *.json -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notin @("config.json", "syncer.config.json") }
+
+    foreach ($candidate in $candidates) {
+        try {
+            $manifest = Get-Content -LiteralPath $candidate.FullName -Raw | ConvertFrom-Json
+            if (-not [string]::IsNullOrWhiteSpace([string]$manifest.id) -and $null -ne $manifest.has_dll -and $null -ne $manifest.has_pck) {
+                return $candidate.FullName
+            }
+        }
+        catch {
+        }
+    }
+
+    throw "Could not locate the mod manifest JSON under '$ProjectRoot'."
+}
+
+function Get-ModManifest {
+    param(
+        [Parameter(Mandatory)]
+        [string]$ProjectRoot
+    )
+
+    $manifestPath = Get-ModManifestPath -ProjectRoot $ProjectRoot
+    return Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+}
+
+function Get-SteamInstallPath {
+    $registryKeys = @(
+        "HKCU:\Software\Valve\Steam",
+        "HKLM:\Software\WOW6432Node\Valve\Steam",
+        "HKLM:\Software\Valve\Steam"
+    )
+
+    foreach ($registryKey in $registryKeys) {
+        try {
+            $installPath = (Get-ItemProperty -Path $registryKey -Name InstallPath -ErrorAction Stop).InstallPath
+            if ($installPath -and (Test-Path -LiteralPath $installPath)) {
+                return (Resolve-ExistingPath -Path $installPath)
+            }
+        }
+        catch {
+        }
+    }
+
+    $fallbacks = @(
+        (Join-Path ${env:ProgramFiles(x86)} "Steam"),
+        (Join-Path $env:ProgramFiles "Steam"),
+        (Join-Path $env:LOCALAPPDATA "Programs\Steam"),
+        "C:\Steam",
+        "D:\Steam",
+        "E:\Steam"
+    ) | Where-Object { $_ }
+
+    $driveRoots = Get-PSDrive -PSProvider FileSystem | ForEach-Object { $_.Root }
+    foreach ($driveRoot in $driveRoots) {
+        $fallbacks += @(
+            (Join-Path $driveRoot "Steam"),
+            (Join-Path $driveRoot "SteamLibrary\Steam"),
+            (Join-Path $driveRoot "Program Files (x86)\Steam"),
+            (Join-Path $driveRoot "Program Files\Steam")
+        )
+    }
+
+    foreach ($candidate in ($fallbacks | Select-Object -Unique)) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) {
+            return (Resolve-ExistingPath -Path $candidate)
+        }
+    }
+
+    return $null
+}
+
+function ConvertFrom-SteamVdfPath {
+    param(
+        [AllowNull()]
+        [string]$Value
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return $null
+    }
+
+    return $Value.Replace("\\", "\")
+}
+
+function Get-SteamLibraryPaths {
+    param(
+        [string]$SteamInstallPath
+    )
+
+    $steamRoot = $SteamInstallPath
+    if ([string]::IsNullOrWhiteSpace($steamRoot)) {
+        $steamRoot = Get-SteamInstallPath
+    }
+
+    if ([string]::IsNullOrWhiteSpace($steamRoot)) {
+        return @()
+    }
+
+    $libraryPaths = [System.Collections.Generic.List[string]]::new()
+    $libraryPaths.Add((Resolve-ExistingPath -Path $steamRoot))
+
+    $libraryFoldersPath = Join-Path $steamRoot "steamapps\libraryfolders.vdf"
+    if (Test-Path -LiteralPath $libraryFoldersPath) {
+        $content = Get-Content -LiteralPath $libraryFoldersPath
+        foreach ($line in $content) {
+            if ($line -match '^\s*"path"\s*"(?<path>.+)"\s*$') {
+                $path = ConvertFrom-SteamVdfPath -Value $Matches.path
+                if ($path -and (Test-Path -LiteralPath $path)) {
+                    $libraryPaths.Add((Resolve-ExistingPath -Path $path))
+                }
+                continue
+            }
+
+            if ($line -match '^\s*"\d+"\s*"(?<path>.+)"\s*$') {
+                $path = ConvertFrom-SteamVdfPath -Value $Matches.path
+                if ($path -and (Test-Path -LiteralPath $path)) {
+                    $libraryPaths.Add((Resolve-ExistingPath -Path $path))
+                }
+            }
+        }
+    }
+
+    return @($libraryPaths | Select-Object -Unique)
+}
+
+function Test-Sts2GameDir {
+    param(
+        [AllowNull()]
+        [string]$Path
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path)) {
+        return $false
+    }
+
+    $exePath = Join-Path $Path "SlayTheSpire2.exe"
+    return (Test-Path -LiteralPath $exePath)
+}
+
+function Resolve-Sts2GameDir {
+    param(
+        [string]$RequestedPath,
+        [string]$SteamInstallPath,
+        [switch]$AllowMissing
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($RequestedPath)) {
+        if (Test-Sts2GameDir -Path $RequestedPath) {
+            return (Resolve-ExistingPath -Path $RequestedPath)
+        }
+
+        throw "Slay the Spire 2 executable not found under '$RequestedPath'."
+    }
+
+    foreach ($libraryPath in (Get-SteamLibraryPaths -SteamInstallPath $SteamInstallPath)) {
+        $commonDir = Join-Path $libraryPath "steamapps\common"
+        if (-not (Test-Path -LiteralPath $commonDir)) {
+            continue
+        }
+
+        $preferredPath = Join-Path $commonDir "Slay the Spire 2"
+        if (Test-Sts2GameDir -Path $preferredPath) {
+            return (Resolve-ExistingPath -Path $preferredPath)
+        }
+
+        $matches = Get-ChildItem -LiteralPath $commonDir -Directory -ErrorAction SilentlyContinue |
+            Where-Object { Test-Sts2GameDir -Path $_.FullName } |
+            Select-Object -First 1
+
+        if ($matches) {
+            return (Resolve-ExistingPath -Path $matches.FullName)
+        }
+    }
+
+    if ($AllowMissing) {
+        return $null
+    }
+
+    throw "Could not locate Slay the Spire 2 in any Steam library. Pass -GameDir to specify it manually."
+}
+
+function Resolve-Sts2ModsRoot {
+    param(
+        [Parameter(Mandatory)]
+        [string]$GameDir
+    )
+
+    foreach ($candidate in @(
+        (Join-Path $GameDir "mods"),
+        (Join-Path $GameDir "Mods")
+    )) {
+        if (Test-Path -LiteralPath $candidate) {
+            return (Resolve-ExistingPath -Path $candidate)
+        }
+    }
+
+    return (Join-Path $GameDir "mods")
+}
+
+function Resolve-DotnetExecutable {
+    $candidates = @()
+    $candidates += "$env:USERPROFILE\.dotnet\dotnet.exe"
+
+    $dotnetCommand = Get-Command dotnet -ErrorAction SilentlyContinue
+    if ($dotnetCommand) {
+        $candidates += $dotnetCommand.Source
+    }
+
+    $resolved = @($candidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique)
+    if (-not $resolved) {
+        throw "dotnet executable not found."
+    }
+
+    return $resolved[0]
+}
+
+function Resolve-GodotExecutable {
+    $candidates = @()
+
+    $godotCommand = Get-Command godot -ErrorAction SilentlyContinue
+    if ($godotCommand) {
+        $candidates += $godotCommand.Source
+    }
+
+    $godot4Command = Get-Command godot4 -ErrorAction SilentlyContinue
+    if ($godot4Command) {
+        $candidates += $godot4Command.Source
+    }
+
+    $candidates += "D:\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe"
+
+    $resolved = @($candidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique)
+    if (-not $resolved) {
+        throw "Godot executable not found."
+    }
+
+    return $resolved[0]
+}
+
+function Resolve-SignToolExecutable {
+    $sdkRoots = @()
+    if ($env:WindowsSdkVerBinPath) {
+        $sdkRoots += $env:WindowsSdkVerBinPath
+    }
+
+    $sdkRoots += @(
+        "C:\Program Files (x86)\Windows Kits\10\bin",
+        "C:\Program Files\Windows Kits\10\bin"
+    )
+
+    $candidates = @()
+
+    $signtoolCommand = Get-Command signtool.exe -ErrorAction SilentlyContinue
+    if ($signtoolCommand) {
+        $candidates += $signtoolCommand.Source
+    }
+
+    foreach ($sdkRoot in ($sdkRoots | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique)) {
+        if (Test-Path -LiteralPath (Join-Path $sdkRoot "x64\signtool.exe")) {
+            $candidates += (Join-Path $sdkRoot "x64\signtool.exe")
+        }
+
+        Get-ChildItem -LiteralPath $sdkRoot -Directory -ErrorAction SilentlyContinue |
+            Sort-Object Name -Descending |
+            ForEach-Object {
+                $x64Path = Join-Path $_.FullName "x64\signtool.exe"
+                if (Test-Path -LiteralPath $x64Path) {
+                    $candidates += $x64Path
+                }
+            }
+    }
+
+    $resolved = @($candidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique)
+    if (-not $resolved) {
+        throw "signtool.exe not found. Install the Windows SDK, then rerun the build."
+    }
+
+    return $resolved[0]
+}
+
+function Get-CodeSigningConfig {
+    $pfxPath = [Environment]::GetEnvironmentVariable("CODESIGN_PFX_PATH")
+    if ([string]::IsNullOrWhiteSpace($pfxPath)) {
+        return $null
+    }
+
+    $resolvedPfxPath = Resolve-ExistingPath -Path $pfxPath
+    return [pscustomobject]@{
+        PfxPath = $resolvedPfxPath
+        Password = [Environment]::GetEnvironmentVariable("CODESIGN_PFX_PASSWORD")
+        TimestampUrl = if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("CODESIGN_TIMESTAMP_URL"))) {
+            "http://timestamp.digicert.com"
+        } else {
+            [Environment]::GetEnvironmentVariable("CODESIGN_TIMESTAMP_URL").Trim()
+        }
+    }
+}
+
+function Test-CodeSigningConfigured {
+    return $null -ne (Get-CodeSigningConfig)
+}
+
+function Test-AuthenticodeSignatureValid {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return $false
+    }
+
+    try {
+        $signature = Get-AuthenticodeSignature -FilePath $Path -ErrorAction Stop
+        return $signature.Status -eq [System.Management.Automation.SignatureStatus]::Valid
+    }
+    catch {
+        return $false
+    }
+}
+
+function Invoke-AuthenticodeCodeSigning {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+        [string]$Description
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        throw "File to sign not found: $Path"
+    }
+
+    $config = Get-CodeSigningConfig
+    if ($null -eq $config) {
+        Write-Host "Code signing skipped for $Path because CODESIGN_PFX_PATH is not set."
+        return
+    }
+
+    if (Test-AuthenticodeSignatureValid -Path $Path) {
+        Write-Host "Code signing skipped for $Path because it already has a valid signature."
+        return
+    }
+
+    $signtool = Resolve-SignToolExecutable
+    $signArgs = @(
+        "sign",
+        "/fd", "SHA256",
+        "/td", "SHA256",
+        "/tr", $config.TimestampUrl,
+        "/f", $config.PfxPath
+    )
+    if ($null -ne $config.Password) {
+        $signArgs += @("/p", $config.Password)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Description)) {
+        $signArgs += @("/d", $Description.Trim())
+    }
+    $signArgs += $Path
+
+    & $signtool @signArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "signtool sign failed for $Path"
+    }
+
+    & $signtool verify "/pa" "/v" $Path
+    if ($LASTEXITCODE -ne 0) {
+        throw "signtool verify failed for $Path"
+    }
+
+    Write-Host "Signed artifact: $Path"
+}
+
+function Update-GodotAssetImports {
+    param(
+        [Parameter(Mandatory)]
+        [string]$GodotExecutable,
+        [Parameter(Mandatory)]
+        [string]$ProjectRoot
+    )
+
+    if (-not (Test-Path -LiteralPath $ProjectRoot)) {
+        throw "Project root not found: $ProjectRoot"
+    }
+
+    & $GodotExecutable --headless --editor --quit --path $ProjectRoot
+    if ($LASTEXITCODE -ne 0) {
+        throw "Godot asset import failed."
+    }
+}
+
+function Copy-DirectoryContents {
+    param(
+        [Parameter(Mandatory)]
+        [string]$SourceDir,
+        [Parameter(Mandatory)]
+        [string]$DestinationDir
+    )
+
+    if (-not (Test-Path -LiteralPath $SourceDir)) {
+        throw "Source directory not found: $SourceDir"
+    }
+
+    New-Item -ItemType Directory -Force -Path $DestinationDir | Out-Null
+
+    foreach ($item in (Get-ChildItem -LiteralPath $SourceDir -Force -ErrorAction Stop)) {
+        Copy-Item -LiteralPath $item.FullName -Destination $DestinationDir -Recurse -Force
+    }
+}
+
+function Write-EffectiveModConfig {
+    param(
+        [Parameter(Mandatory)]
+        [string]$SourcePath,
+        [Parameter(Mandatory)]
+        [string]$DestinationPath,
+        [AllowNull()]
+        [string]$UpdateRepo,
+        [AllowNull()]
+        [string]$TelemetryEndpoint,
+        [string[]]$TelemetryEndpoints,
+        [AllowNull()]
+        [string]$EnableAutoUpdate,
+        [AllowNull()]
+        [string]$EnableTelemetry
+    )
+
+    $config = Get-Content -LiteralPath $SourcePath -Raw | ConvertFrom-Json
+
+    if ($PSBoundParameters.ContainsKey("UpdateRepo") -and -not [string]::IsNullOrWhiteSpace($UpdateRepo)) {
+        $config.mod_update_github_repo = $UpdateRepo.Trim().Trim("/")
+    }
+
+    if ($PSBoundParameters.ContainsKey("TelemetryEndpoint")) {
+        $config.telemetry_endpoint = ([string]$TelemetryEndpoint).Trim()
+    }
+
+    if ($PSBoundParameters.ContainsKey("TelemetryEndpoints") -and $null -ne $TelemetryEndpoints) {
+        $normalized = @($TelemetryEndpoints | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() } | Select-Object -Unique)
+        $config.telemetry_endpoints = $normalized
+        if ($normalized.Count -gt 0 -and [string]::IsNullOrWhiteSpace([string]$config.telemetry_endpoint)) {
+            $config.telemetry_endpoint = $normalized[0]
+        }
+    }
+
+    if ($PSBoundParameters.ContainsKey("EnableAutoUpdate") -and -not [string]::IsNullOrWhiteSpace($EnableAutoUpdate)) {
+        $config.mod_update_enabled = [System.Convert]::ToBoolean($EnableAutoUpdate)
+    }
+
+    if ($PSBoundParameters.ContainsKey("EnableTelemetry") -and -not [string]::IsNullOrWhiteSpace($EnableTelemetry)) {
+        $config.telemetry_enabled = [System.Convert]::ToBoolean($EnableTelemetry)
+    }
+
+    $json = $config | ConvertTo-Json -Depth 8
+    Set-Content -LiteralPath $DestinationPath -Value $json -Encoding UTF8
+}
+
+function Set-PckCompatibilityHeader {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+        [int]$EngineMinorVersion = 5,
+        [int]$RetryCount = 10,
+        [int]$RetryDelayMilliseconds = 300
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        throw "PCK file not found: $Path"
+    }
+
+    [byte[]]$pckBytes = $null
+    for ($attempt = 1; $attempt -le $RetryCount; $attempt++) {
+        try {
+            $pckBytes = [System.IO.File]::ReadAllBytes($Path)
+            break
+        }
+        catch {
+            if ($attempt -eq $RetryCount) {
+                throw
+            }
+
+            Start-Sleep -Milliseconds $RetryDelayMilliseconds
+        }
+    }
+
+    if ($null -eq $pckBytes -or $pckBytes.Length -lt 16) {
+        throw "PCK header too small."
+    }
+
+    # Offsets 8-15 store the Godot engine version tuple. STS2 currently accepts 4.5.x packs.
+    $pckBytes[8] = 4
+    $pckBytes[9] = 0
+    $pckBytes[10] = 0
+    $pckBytes[11] = 0
+    $pckBytes[12] = [byte]$EngineMinorVersion
+    $pckBytes[13] = 0
+    $pckBytes[14] = 0
+    $pckBytes[15] = 0
+    for ($attempt = 1; $attempt -le $RetryCount; $attempt++) {
+        try {
+            [System.IO.File]::WriteAllBytes($Path, $pckBytes)
+            return
+        }
+        catch {
+            if ($attempt -eq $RetryCount) {
+                throw
+            }
+
+            Start-Sleep -Milliseconds $RetryDelayMilliseconds
+        }
+    }
+}
+
+function Get-PckCompatibilityHeader {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+        [int]$RetryCount = 10,
+        [int]$RetryDelayMilliseconds = 300
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        throw "PCK file not found: $Path"
+    }
+
+    [byte[]]$pckBytes = $null
+    for ($attempt = 1; $attempt -le $RetryCount; $attempt++) {
+        try {
+            $pckBytes = [System.IO.File]::ReadAllBytes($Path)
+            break
+        }
+        catch {
+            if ($attempt -eq $RetryCount) {
+                throw
+            }
+
+            Start-Sleep -Milliseconds $RetryDelayMilliseconds
+        }
+    }
+
+    if ($null -eq $pckBytes -or $pckBytes.Length -lt 16) {
+        throw "PCK header too small."
+    }
+
+    [pscustomobject]@{
+        Major = [System.BitConverter]::ToInt32($pckBytes, 8)
+        Minor = [System.BitConverter]::ToInt32($pckBytes, 12)
+    }
+}
+
+function Assert-PckCompatibilityHeader {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+        [int]$ExpectedMajor = 4,
+        [int]$MaxMinor = 5
+    )
+
+    $header = Get-PckCompatibilityHeader -Path $Path
+    if ($header.Major -ne $ExpectedMajor -or $header.Minor -gt $MaxMinor) {
+        throw "PCK compatibility header is $($header.Major).$($header.Minor), expected <= Godot $ExpectedMajor.$MaxMinor."
+    }
+
+    return $header
+}

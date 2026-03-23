@@ -1,0 +1,46 @@
+name: Release Mod
+
+on:
+  workflow_dispatch:
+    inputs:
+      prerelease:
+        description: Mark the GitHub release as prerelease
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: [self-hosted, windows, x64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Publish release
+        shell: powershell
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          $args = @(
+            "-ExecutionPolicy", "Bypass",
+            "-File", ".\scripts\publish-release.ps1",
+            "-Upload"
+          )
+
+          if ("${{ github.event_name }}" -eq "workflow_dispatch" -and "${{ inputs.prerelease }}" -eq "true") {
+            $args += "-Prerelease"
+          }
+
+          & powershell @args
+          if ($LASTEXITCODE -ne 0) {
+            throw "publish-release failed."
+          }
