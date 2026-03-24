@@ -1,16 +1,21 @@
 using Godot;
+using MegaCrit.Sts2.Core.Assets;
 using MegaCrit.Sts2.Core.Entities.Players;
+using MegaCrit.Sts2.Core.Entities.UI;
 using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Nodes.Potions;
 using MegaCrit.Sts2.Core.Nodes.Relics;
 using MegaCrit.Sts2.Core.Nodes.Screens.ScreenContext;
+using MegaCrit.Sts2.Core.Nodes.Screens.PotionLab;
 
 namespace Sts2MultiplayerTrade;
 
 internal sealed class NTradeProposalPopup : Control, IScreenContext
 {
+    private const float DragThreshold = 18f;
+
     private const string GoldIconPath = "res://images/packed/sprite_fonts/gold_icon.png";
 
     private readonly List<Control> _focusChain = new();
@@ -33,6 +38,14 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
 
     private VBoxContainer? _remoteOfferRoot;
 
+    private PanelContainer? _dropTargetPanel;
+
+    private Label? _dropHintLabel;
+
+    private VBoxContainer? _dropTargetPreviewRoot;
+
+    private Control? _dragCaptureLayer;
+
     private Button? _cancelButton;
 
     private Button? _resetButton;
@@ -40,6 +53,22 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
     private Button? _readyButton;
 
     private Button? _confirmButton;
+
+    private bool _dropTargetEditable;
+
+    private TradeDragPayload? _activeDragPayload;
+
+    private bool _dropHovering;
+
+    private bool _dragPrimed;
+
+    private Vector2 _dragStartPosition;
+
+    private TradeDragPayload? _primedDragPayload;
+
+    private Control? _dragPreview;
+
+    private Control? _dragSourceControl;
 
     public ulong RemotePlayerId => _remotePlayerId;
 
@@ -69,7 +98,32 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
 
     public override void _ExitTree()
     {
+        EndNativeDrag();
         DetachSubscription();
+    }
+
+    public override void _Process(double delta)
+    {
+        if (_dragPrimed)
+        {
+            if (!Input.IsMouseButtonPressed(MouseButton.Left))
+            {
+                CancelPrimedDrag();
+            }
+            else if (GetGlobalMousePosition().DistanceTo(_dragStartPosition) >= DragThreshold)
+            {
+                BeginNativeDrag();
+            }
+        }
+
+        if (_activeDragPayload == null)
+        {
+            return;
+        }
+
+        _dropHovering = IsPointerOverDropTarget();
+        UpdateDragPresentation();
+        UpdateDropTargetVisuals();
     }
 
     private void BuildUi()
@@ -87,7 +141,10 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
         OffsetBottom = 0f;
         MouseFilter = MouseFilterEnum.Stop;
         FocusMode = FocusModeEnum.All;
+        ProcessMode = ProcessModeEnum.Always;
         ZIndex = 500;
+        SetProcessInput(true);
+        SetProcess(true);
 
         ColorRect backdrop = new()
         {
@@ -100,6 +157,17 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
         CenterContainer center = new();
         center.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
         AddChild(center);
+
+        _dragCaptureLayer = new Control
+        {
+            Visible = false,
+            MouseFilter = MouseFilterEnum.Stop,
+            ProcessMode = ProcessModeEnum.Always,
+            ZIndex = 850
+        };
+        _dragCaptureLayer.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+        _dragCaptureLayer.GuiInput += HandleDragCaptureInput;
+        AddChild(_dragCaptureLayer);
 
         PanelContainer shell = new();
         shell.CustomMinimumSize = new Vector2(1220f, 760f);
@@ -234,8 +302,41 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
         _statusLabel = CreateBodyLabel(string.Empty, 15);
         _statusLabel.AutowrapMode = TextServer.AutowrapMode.WordSmart;
         _statusLabel.SizeFlagsHorizontal = SizeFlags.ExpandFill;
-        _statusLabel.SizeFlagsVertical = SizeFlags.ExpandFill;
+        _statusLabel.SizeFlagsVertical = SizeFlags.ShrinkBegin;
         stack.AddChild(_statusLabel);
+
+        stack.AddChild(CreateTitleLabel(TradeUiText.IsChineseLocale() ? "拖到这里加入交易" : "Drop Zone", 16));
+
+        _dropTargetPanel = new TradeDropTargetPanel(this);
+        _dropTargetPanel.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        _dropTargetPanel.SizeFlagsVertical = SizeFlags.ExpandFill;
+        _dropTargetPanel.CustomMinimumSize = new Vector2(0f, 280f);
+        _dropTargetPanel.MouseFilter = MouseFilterEnum.Stop;
+        stack.AddChild(_dropTargetPanel);
+
+        MarginContainer dropMargin = CreateMargin(10, 10);
+        dropMargin.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        dropMargin.SizeFlagsVertical = SizeFlags.ExpandFill;
+        _dropTargetPanel.AddChild(dropMargin);
+
+        VBoxContainer dropStack = new();
+        dropStack.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        dropStack.SizeFlagsVertical = SizeFlags.ExpandFill;
+        dropStack.AddThemeConstantOverride("separation", 10);
+        dropMargin.AddChild(dropStack);
+
+        _dropHintLabel = CreateBodyLabel(string.Empty, 14);
+        _dropHintLabel.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+        _dropHintLabel.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        dropStack.AddChild(_dropHintLabel);
+
+        _dropTargetPreviewRoot = new VBoxContainer();
+        _dropTargetPreviewRoot.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        _dropTargetPreviewRoot.SizeFlagsVertical = SizeFlags.ExpandFill;
+        _dropTargetPreviewRoot.AddThemeConstantOverride("separation", 10);
+        dropStack.AddChild(_dropTargetPreviewRoot);
+
+        UpdateDropTargetVisuals();
     }
 
     private void Refresh()
@@ -267,6 +368,7 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
         if (_manager.ActiveSession == null)
         {
             Log.Info($"{ModEntry.ModId}: trade popup closing because active session is null.", 2);
+            EndNativeDrag();
             this.QueueFreeSafely();
             return;
         }
@@ -276,6 +378,7 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
         if (localPlayer == null || remotePlayer == null)
         {
             Log.Warn($"{ModEntry.ModId}: trade popup refresh missing players. local={(localPlayer != null)} remote={(remotePlayer != null)}", 2);
+            EndNativeDrag();
             this.QueueFreeSafely();
             return;
         }
@@ -284,18 +387,22 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
         try
         {
             _focusChain.Clear();
+            TradeSessionState session = _manager.ActiveSession;
+            TradeOfferDraft localOffer = session.OffersByPlayerId.GetValueOrDefault(localPlayer.NetId) ?? new TradeOfferDraft();
             _headerLabel.Text = TradeUiText.TradeTitle(_manager.GetPlayerName(remotePlayer.NetId));
             _statusLabel.Text = BuildStatusText(localPlayer, remotePlayer);
 
             RebuildLocalOffer(localPlayer);
             RebuildRemoteOffer(remotePlayer);
+            RefreshDropTarget(localPlayer, localOffer);
 
-            TradeSessionState session = _manager.ActiveSession;
             bool accepted = session.Accepted;
             bool localReady = session.ReadyByPlayerId.GetValueOrDefault(localPlayer.NetId);
             bool bothReady = session.ReadyByPlayerId.GetValueOrDefault(session.InitiatorPlayerId)
                 && session.ReadyByPlayerId.GetValueOrDefault(session.RecipientPlayerId);
             bool canCommit = accepted && bothReady && _manager.GetValidationForLocalPlayer().IsValid;
+            _dropTargetEditable = accepted;
+            UpdateDropTargetVisuals();
 
             _readyButton!.Text = localReady ? TradeUiText.Unready : TradeUiText.Ready;
             _readyButton.Disabled = !accepted;
@@ -379,6 +486,7 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
     private Control CreatePotionEditor(Player localPlayer, TradeOfferDraft offer, bool editable)
     {
         VBoxContainer section = CreateSection(TradeUiText.Potions);
+        GridContainer grid = CreateCardGrid();
         bool any = false;
 
         for (int slotIndex = 0; slotIndex < localPlayer.PotionSlots.Count; slotIndex += 1)
@@ -390,26 +498,22 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
             }
 
             any = true;
-            NPotionHolder? holder = TryCreatePotionHolder(potion);
+            Control? holder = TryCreatePotionHolder(potion);
             bool selected = offer.Potions.Any(item => item.SlotIndex == slotIndex);
-            Control row = CreateSelectionRow(
-                $"{slotIndex + 1}. {GetPotionName(potion, null)}",
+            Control row = CreateDragSelectionRow(
+                $"{slotIndex + 1}. {GetPotionNameSafe(potion, null)}",
                 selected,
                 !editable || !localPlayer.CanRemovePotions,
                 holder,
-                () =>
-                {
-                    if (!_refreshing)
-                    {
-                        Log.Info($"{ModEntry.ModId}: potion row clicked slot={slotIndex} selected={selected}.", 2);
-                        _manager?.ToggleLocalPotion(slotIndex, !selected);
-                    }
-                });
-            section.AddChild(row);
-            _focusChain.Add(row);
+                new TradeDragPayload(TradeDragKind.Potion, slotIndex, GetPotionNameSafe(potion, null)));
+            grid.AddChild(row);
         }
 
-        if (!any)
+        if (any)
+        {
+            section.AddChild(grid);
+        }
+        else
         {
             section.AddChild(CreateEmptyLabel(TradeUiText.NoPotions));
         }
@@ -420,6 +524,7 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
     private Control CreateRelicEditor(Player localPlayer, TradeOfferDraft offer, bool editable)
     {
         VBoxContainer section = CreateSection(TradeUiText.Relics);
+        GridContainer grid = CreateCardGrid();
         bool any = false;
 
         for (int relicIndex = 0; relicIndex < localPlayer.Relics.Count; relicIndex += 1)
@@ -431,31 +536,22 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
             }
 
             any = true;
-            NRelicBasicHolder? holder = NRelicBasicHolder.Create(relic);
-            if (holder != null)
-            {
-                holder.FocusMode = FocusModeEnum.None;
-                holder.MouseFilter = MouseFilterEnum.Ignore;
-            }
+            NRelicBasicHolder? holder = TryCreateRelicHolder(relic);
             bool selected = offer.Relics.Any(item => item.RelicIndex == relicIndex);
-            Control row = CreateSelectionRow(
+            Control row = CreateDragSelectionRow(
                 $"{relicIndex + 1}. {GetRelicName(relic, null)}",
                 selected,
                 !editable,
                 holder,
-                () =>
-                {
-                    if (!_refreshing)
-                    {
-                        Log.Info($"{ModEntry.ModId}: relic row clicked relicIndex={relicIndex} selected={selected}.", 2);
-                        _manager?.ToggleLocalRelic(relicIndex, !selected);
-                    }
-                });
-            section.AddChild(row);
-            _focusChain.Add(row);
+                new TradeDragPayload(TradeDragKind.Relic, relicIndex, GetRelicName(relic, null)));
+            grid.AddChild(row);
         }
 
-        if (!any)
+        if (any)
+        {
+            section.AddChild(grid);
+        }
+        else
         {
             section.AddChild(CreateEmptyLabel(TradeUiText.NoRelics));
         }
@@ -468,11 +564,26 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
         VBoxContainer stack = new();
         stack.AddThemeConstantOverride("separation", 10);
 
-        stack.AddChild(CreatePreviewGoldSection(offer.GoldAmount));
-        stack.AddChild(CreatePreviewPotionSection(player, offer));
-        stack.AddChild(CreatePreviewRelicSection(player, offer));
+        bool any = false;
+        if (offer.GoldAmount > 0)
+        {
+            stack.AddChild(CreatePreviewGoldSection(offer.GoldAmount));
+            any = true;
+        }
 
-        if (offer.GoldAmount == 0 && offer.Potions.Count == 0 && offer.Relics.Count == 0)
+        if (offer.Potions.Count > 0)
+        {
+            stack.AddChild(CreatePreviewPotionSection(player, offer));
+            any = true;
+        }
+
+        if (offer.Relics.Count > 0)
+        {
+            stack.AddChild(CreatePreviewRelicSection(player, offer));
+            any = true;
+        }
+
+        if (!any)
         {
             stack.AddChild(CreateEmptyLabel(TradeUiText.OfferEmpty));
         }
@@ -493,23 +604,25 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
     private Control CreatePreviewPotionSection(Player player, TradeOfferDraft offer)
     {
         VBoxContainer section = CreateSection(TradeUiText.Potions);
+        GridContainer grid = CreateCardGrid();
         bool any = false;
 
         foreach (TradePotionSelection selection in offer.Potions.OrderBy(static item => item.SlotIndex))
         {
             any = true;
             PotionModel? potion = TryGetPotionAtSlot(player, selection.SlotIndex);
-            HBoxContainer row = CreateAssetRow();
             Control iconHost = CreatePreviewIconHost();
-            row.AddChild(iconHost);
 
             string potionName = GetPotionNameSafe(potion, selection);
-            row.AddChild(CreateBodyLabel($"{selection.SlotIndex + 1}. {potionName}", 15));
-            section.AddChild(row);
+            grid.AddChild(CreatePreviewSelectionCard($"{selection.SlotIndex + 1}. {potionName}", iconHost));
             QueuePotionPreviewHolder(iconHost, potion);
         }
 
-        if (!any)
+        if (any)
+        {
+            section.AddChild(grid);
+        }
+        else
         {
             section.AddChild(CreateEmptyLabel(TradeUiText.OfferEmpty));
         }
@@ -520,22 +633,24 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
     private Control CreatePreviewRelicSection(Player player, TradeOfferDraft offer)
     {
         VBoxContainer section = CreateSection(TradeUiText.Relics);
+        GridContainer grid = CreateCardGrid();
         bool any = false;
 
         foreach (TradeRelicSelection selection in offer.Relics.OrderBy(static item => item.RelicIndex))
         {
             any = true;
             RelicModel? relic = TryGetRelicAtIndex(player, selection.RelicIndex);
-            HBoxContainer row = CreateAssetRow();
             Control iconHost = CreatePreviewIconHost();
-            row.AddChild(iconHost);
 
-            row.AddChild(CreateBodyLabel($"{selection.RelicIndex + 1}. {GetRelicName(relic, selection)}", 15));
-            section.AddChild(row);
+            grid.AddChild(CreatePreviewSelectionCard($"{selection.RelicIndex + 1}. {GetRelicName(relic, selection)}", iconHost));
             QueueRelicPreviewHolder(iconHost, relic);
         }
 
-        if (!any)
+        if (any)
+        {
+            section.AddChild(grid);
+        }
+        else
         {
             section.AddChild(CreateEmptyLabel(TradeUiText.OfferEmpty));
         }
@@ -695,60 +810,483 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
         return button;
     }
 
-    private static Control CreateSelectionRow(string text, bool selected, bool disabled, Control? icon, Action onClick)
+    private Control CreateDragSelectionRow(string text, bool selected, bool disabled, Control? icon, TradeDragPayload payload)
     {
-        PanelContainer row = new()
-        {
-            FocusMode = FocusModeEnum.All,
-            MouseFilter = MouseFilterEnum.Stop,
-            SizeFlagsHorizontal = SizeFlags.ExpandFill,
-            CustomMinimumSize = new Vector2(0f, 42f)
-        };
         Color normal = selected
             ? new Color(0.20f, 0.29f, 0.20f, 0.98f)
             : new Color(0.18f, 0.21f, 0.27f, 0.98f);
         Color border = selected
             ? new Color(0.66f, 0.88f, 0.66f, 0.95f)
             : new Color(0.48f, 0.56f, 0.68f, 0.85f);
+
+        PanelContainer row = new()
+        {
+            FocusMode = FocusModeEnum.None,
+            MouseDefaultCursorShape = disabled ? CursorShape.Arrow : CursorShape.PointingHand,
+            MouseFilter = MouseFilterEnum.Stop,
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            SizeFlagsVertical = SizeFlags.ShrinkCenter,
+            CustomMinimumSize = new Vector2(104f, 104f),
+            TooltipText = text
+        };
         row.AddThemeStyleboxOverride("panel", CreatePanelStyle(normal, border, 8));
 
-        MarginContainer margin = CreateMargin(10, 6);
+        MarginContainer margin = CreateMargin(8, 8);
+        margin.MouseFilter = MouseFilterEnum.Ignore;
         row.AddChild(margin);
 
-        HBoxContainer content = new();
-        content.AddThemeConstantOverride("separation", 10);
-        content.SizeFlagsHorizontal = SizeFlags.ExpandFill;
-        margin.AddChild(content);
+        CenterContainer center = new();
+        center.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        center.SizeFlagsVertical = SizeFlags.ExpandFill;
+        center.MouseFilter = MouseFilterEnum.Ignore;
+        margin.AddChild(center);
 
         if (icon != null)
         {
             icon.MouseFilter = MouseFilterEnum.Ignore;
-            content.AddChild(icon);
-        }
-
-        Label label = CreateBodyLabel((selected ? "[x] " : "[ ] ") + text, 16);
-        label.SizeFlagsHorizontal = SizeFlags.ExpandFill;
-        label.MouseFilter = MouseFilterEnum.Ignore;
-        if (disabled)
-        {
-            label.Modulate = new Color(1f, 1f, 1f, 0.55f);
-        }
-
-        content.AddChild(label);
-        row.GuiInput += inputEvent =>
-        {
             if (disabled)
             {
+                icon.Modulate = new Color(1f, 1f, 1f, 0.55f);
+            }
+
+            center.AddChild(icon);
+        }
+
+        row.GuiInput += @event => HandleDragSourceInput(row, payload, disabled, @event);
+        return row;
+    }
+
+    private static GridContainer CreateCardGrid(int columns = 3)
+    {
+        GridContainer grid = new()
+        {
+            Columns = columns,
+            SizeFlagsHorizontal = SizeFlags.ExpandFill
+        };
+        grid.AddThemeConstantOverride("h_separation", 10);
+        grid.AddThemeConstantOverride("v_separation", 10);
+        return grid;
+    }
+
+    private static Control CreateSelectionIconFrame(Control? icon, bool selected, bool disabled)
+    {
+        Color background = selected
+            ? new Color(0.16f, 0.27f, 0.18f, 0.98f)
+            : new Color(0.12f, 0.15f, 0.20f, 0.98f);
+        Color border = selected
+            ? new Color(0.70f, 0.90f, 0.70f, 0.95f)
+            : new Color(0.36f, 0.44f, 0.56f, 0.85f);
+
+        PanelContainer panel = new()
+        {
+            CustomMinimumSize = new Vector2(84f, 84f),
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            MouseFilter = MouseFilterEnum.Ignore
+        };
+        panel.AddThemeStyleboxOverride("panel", CreatePanelStyle(background, border, 10));
+
+        CenterContainer center = new();
+        center.MouseFilter = MouseFilterEnum.Ignore;
+        center.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+        panel.AddChild(center);
+
+        if (icon != null)
+        {
+            icon.MouseFilter = MouseFilterEnum.Ignore;
+            if (disabled)
+            {
+                icon.Modulate = new Color(1f, 1f, 1f, 0.55f);
+            }
+
+            center.AddChild(icon);
+        }
+
+        return panel;
+    }
+
+    private static Control CreatePreviewSelectionCard(string text, Control iconHost)
+    {
+        PanelContainer card = new()
+        {
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            CustomMinimumSize = new Vector2(104f, 104f),
+            TooltipText = text
+        };
+        card.AddThemeStyleboxOverride("panel", CreatePanelStyle(new Color(0.16f, 0.19f, 0.25f, 0.98f), new Color(0.50f, 0.58f, 0.70f, 0.85f), 8));
+
+        MarginContainer margin = CreateMargin(8, 8);
+        card.AddChild(margin);
+
+        CenterContainer center = new();
+        center.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        center.SizeFlagsVertical = SizeFlags.ExpandFill;
+        margin.AddChild(center);
+
+        iconHost.MouseFilter = MouseFilterEnum.Ignore;
+        center.AddChild(iconHost);
+        return card;
+    }
+
+    private void HandleDragSourceInput(Control source, TradeDragPayload payload, bool disabled, InputEvent @event)
+    {
+        if (disabled || _refreshing)
+        {
+            return;
+        }
+
+        if (_activeDragPayload != null || _dragPrimed)
+        {
+            return;
+        }
+
+        if (@event is InputEventMouseButton { ButtonIndex: MouseButton.Left, Pressed: true })
+        {
+            Log.Info($"{ModEntry.ModId}: drag primed kind={payload.Kind} index={payload.Index}.", 2);
+            _dragPrimed = true;
+            _dragStartPosition = GetGlobalMousePosition();
+            _primedDragPayload = payload;
+            _dragSourceControl = source;
+            if (_dragCaptureLayer != null && GodotObject.IsInstanceValid(_dragCaptureLayer))
+            {
+                _dragCaptureLayer.Visible = true;
+            }
+
+            source.AcceptEvent();
+            return;
+        }
+    }
+
+    private void ToggleDraggedSelection(TradeDragPayload payload)
+    {
+        if (_manager?.ActiveSession == null)
+        {
+            return;
+        }
+
+        Player? localPlayer = GetLocalPlayer();
+        if (localPlayer == null)
+        {
+            return;
+        }
+
+        TradeOfferDraft offer = _manager.ActiveSession.OffersByPlayerId.GetValueOrDefault(localPlayer.NetId) ?? new TradeOfferDraft();
+        switch (payload.Kind)
+        {
+            case TradeDragKind.Potion:
+            {
+                bool selected = offer.Potions.Any(item => item.SlotIndex == payload.Index);
+                Log.Info($"{ModEntry.ModId}: drag dropped potion slot={payload.Index} selected={selected}.", 2);
+                _manager.ToggleLocalPotion(payload.Index, !selected);
+                break;
+            }
+            case TradeDragKind.Relic:
+            {
+                bool selected = offer.Relics.Any(item => item.RelicIndex == payload.Index);
+                Log.Info($"{ModEntry.ModId}: drag dropped relic relicIndex={payload.Index} selected={selected}.", 2);
+                _manager.ToggleLocalRelic(payload.Index, !selected);
+                break;
+            }
+        }
+    }
+
+    private void BeginNativeDrag()
+    {
+        if (_activeDragPayload != null || _primedDragPayload == null || _dragSourceControl == null)
+        {
+            return;
+        }
+
+        _activeDragPayload = _primedDragPayload;
+        _dragPrimed = false;
+        _primedDragPayload = null;
+        _dragSourceControl.Modulate = new Color(1f, 1f, 1f, 0.35f);
+        _dropHovering = false;
+        _dragPreview = CreateManualDragPreview(_activeDragPayload);
+        AddChild(_dragPreview);
+        UpdateDragPresentation();
+        UpdateDropTargetVisuals();
+        Log.Info($"{ModEntry.ModId}: drag started kind={_activeDragPayload.Kind} index={_activeDragPayload.Index}.", 2);
+    }
+
+    private bool CanAcceptCurrentDrag()
+    {
+        return _dropTargetEditable && _activeDragPayload != null;
+    }
+
+    private void CommitCurrentDrag()
+    {
+        if (_activeDragPayload == null)
+        {
+            return;
+        }
+
+        ToggleDraggedSelection(_activeDragPayload);
+    }
+
+    private void EndNativeDrag()
+    {
+        if (_activeDragPayload == null && !_dropHovering && !_dragPrimed)
+        {
+            return;
+        }
+
+        if (_dragPreview != null && GodotObject.IsInstanceValid(_dragPreview))
+        {
+            _dragPreview.QueueFree();
+        }
+
+        if (_dragCaptureLayer != null && GodotObject.IsInstanceValid(_dragCaptureLayer))
+        {
+            _dragCaptureLayer.Visible = false;
+        }
+
+        _dragPreview = null;
+        if (_dragSourceControl != null && GodotObject.IsInstanceValid(_dragSourceControl))
+        {
+            _dragSourceControl.Modulate = Colors.White;
+        }
+
+        _dragPrimed = false;
+        _primedDragPayload = null;
+        _dragSourceControl = null;
+        _dropHovering = false;
+        _activeDragPayload = null;
+        UpdateDropTargetVisuals();
+    }
+
+    private void CancelPrimedDrag()
+    {
+        if (!_dragPrimed)
+        {
+            return;
+        }
+
+        EndNativeDrag();
+    }
+
+    private void HandleDragCaptureInput(InputEvent @event)
+    {
+        if (_activeDragPayload == null && !_dragPrimed)
+        {
+            return;
+        }
+
+        if (_dragPrimed && _activeDragPayload == null)
+        {
+            if (@event is InputEventMouseMotion)
+            {
+                if (GetGlobalMousePosition().DistanceTo(_dragStartPosition) >= DragThreshold)
+                {
+                    BeginNativeDrag();
+                }
+
+                _dragCaptureLayer?.AcceptEvent();
                 return;
             }
 
-            if (inputEvent is InputEventMouseButton { ButtonIndex: MouseButton.Left, Pressed: true })
+            if (@event is InputEventMouseButton { ButtonIndex: MouseButton.Left, Pressed: false })
             {
-                row.AcceptEvent();
-                onClick();
+                CancelPrimedDrag();
+                _dragCaptureLayer?.AcceptEvent();
+                return;
             }
+        }
+
+        if (@event is InputEventMouseMotion)
+        {
+            _dropHovering = IsPointerOverDropTarget();
+            UpdateDragPresentation();
+            _dragCaptureLayer?.AcceptEvent();
+            return;
+        }
+
+        if (@event is InputEventMouseButton { ButtonIndex: MouseButton.Left, Pressed: false })
+        {
+            if (_activeDragPayload == null)
+            {
+                EndNativeDrag();
+                _dragCaptureLayer?.AcceptEvent();
+                return;
+            }
+
+            TradeDragPayload payload = _activeDragPayload;
+            _dropHovering = IsPointerOverDropTarget();
+            if (_dropHovering)
+            {
+                Log.Info($"{ModEntry.ModId}: drag release accepted kind={payload.Kind} index={payload.Index}.", 2);
+                CommitCurrentDrag();
+            }
+            else
+            {
+                Log.Info($"{ModEntry.ModId}: drag release canceled kind={payload.Kind} index={payload.Index}.", 2);
+            }
+
+            EndNativeDrag();
+            _dragCaptureLayer?.AcceptEvent();
+        }
+    }
+
+    private void RefreshDropTarget(Player localPlayer, TradeOfferDraft localOffer)
+    {
+        if (_dropTargetPreviewRoot == null || !GodotObject.IsInstanceValid(_dropTargetPreviewRoot))
+        {
+            return;
+        }
+
+        ClearChildren(_dropTargetPreviewRoot);
+        _dropTargetPreviewRoot.AddChild(CreateOfferPreview(localPlayer, localOffer));
+    }
+
+    private void UpdateDragPresentation()
+    {
+        if (_dragPreview != null && GodotObject.IsInstanceValid(_dragPreview))
+        {
+            _dragPreview.Position = GetGlobalMousePosition() + new Vector2(20f, 20f);
+        }
+
+        UpdateDropTargetVisuals();
+    }
+
+    private void UpdateDropTargetVisuals()
+    {
+        if (_dropTargetPanel == null || _dropHintLabel == null || !GodotObject.IsInstanceValid(_dropTargetPanel) || !GodotObject.IsInstanceValid(_dropHintLabel))
+        {
+            return;
+        }
+
+        bool dragging = _activeDragPayload != null && _dropTargetEditable;
+        bool hovering = dragging && _dropHovering;
+
+        Color background = hovering
+            ? new Color(0.18f, 0.30f, 0.22f, 0.98f)
+            : dragging
+                ? new Color(0.16f, 0.21f, 0.29f, 0.98f)
+                : new Color(0.14f, 0.17f, 0.22f, 0.92f);
+        Color border = hovering
+            ? new Color(0.70f, 0.92f, 0.70f, 0.98f)
+            : dragging
+                ? new Color(0.76f, 0.86f, 0.98f, 0.95f)
+                : new Color(0.46f, 0.54f, 0.66f, 0.76f);
+
+        _dropTargetPanel.AddThemeStyleboxOverride("panel", CreatePanelStyle(background, border, 12));
+        _dropHintLabel.Text = BuildDropHintText(hovering);
+    }
+
+    private string BuildDropHintText(bool hovering)
+    {
+        if (!_dropTargetEditable)
+        {
+            return TradeUiText.IsChineseLocale()
+                ? "等待交易激活后再拖动物品。"
+                : "Wait until the trade is active before dragging items.";
+        }
+
+        if (_activeDragPayload == null)
+        {
+            return TradeUiText.IsChineseLocale()
+                ? "把药水或遗物拖到这里，加入或移出交易。"
+                : "Drag potions or relics here to add or remove them from the trade.";
+        }
+
+        bool selected = IsPayloadSelected(_activeDragPayload);
+        if (hovering)
+        {
+            return selected
+                ? (TradeUiText.IsChineseLocale()
+                    ? "松开即可移出交易。"
+                    : "Release to remove from trade.")
+                : (TradeUiText.IsChineseLocale()
+                    ? "松开即可加入交易。"
+                    : "Release to add to trade.");
+        }
+
+        return selected
+            ? (TradeUiText.IsChineseLocale()
+                ? "拖到中间即可移出交易。"
+                : "Drag to center to remove from trade.")
+            : (TradeUiText.IsChineseLocale()
+                ? "拖到中间即可加入交易。"
+                : "Drag to center to add to trade.");
+    }
+
+    private bool IsPayloadSelected(TradeDragPayload payload)
+    {
+        if (_manager?.ActiveSession == null)
+        {
+            return false;
+        }
+
+        Player? localPlayer = GetLocalPlayer();
+        if (localPlayer == null)
+        {
+            return false;
+        }
+
+        TradeOfferDraft offer = _manager.ActiveSession.OffersByPlayerId.GetValueOrDefault(localPlayer.NetId) ?? new TradeOfferDraft();
+        return payload.Kind switch
+        {
+            TradeDragKind.Potion => offer.Potions.Any(item => item.SlotIndex == payload.Index),
+            TradeDragKind.Relic => offer.Relics.Any(item => item.RelicIndex == payload.Index),
+            _ => false
         };
-        return row;
+    }
+
+    private bool IsPointerOverDropTarget()
+    {
+        return _dropTargetEditable
+            && _dropTargetPanel != null
+            && GodotObject.IsInstanceValid(_dropTargetPanel)
+            && _dropTargetPanel.GetGlobalRect().HasPoint(GetGlobalMousePosition());
+    }
+
+    private Control CreateNativeDragPreview(TradeDragPayload payload)
+    {
+        PanelContainer preview = new()
+        {
+            MouseFilter = MouseFilterEnum.Ignore
+        };
+        preview.AddThemeStyleboxOverride("panel", CreatePanelStyle(new Color(0.18f, 0.21f, 0.27f, 0.98f), new Color(0.78f, 0.86f, 0.96f, 0.95f), 10));
+
+        MarginContainer margin = CreateMargin(10, 6);
+        margin.MouseFilter = MouseFilterEnum.Ignore;
+        preview.AddChild(margin);
+
+        CenterContainer center = new();
+        center.MouseFilter = MouseFilterEnum.Ignore;
+        margin.AddChild(center);
+
+        Control? icon = CreateDragPreviewIcon(payload);
+        if (icon != null)
+        {
+            icon.MouseFilter = MouseFilterEnum.Ignore;
+            center.AddChild(icon);
+        }
+        return preview;
+    }
+
+    private Control CreateManualDragPreview(TradeDragPayload payload)
+    {
+        Control preview = CreateNativeDragPreview(payload);
+        preview.TopLevel = true;
+        preview.ZIndex = 900;
+        preview.MouseFilter = MouseFilterEnum.Ignore;
+        return preview;
+    }
+
+    private Control? CreateDragPreviewIcon(TradeDragPayload payload)
+    {
+        Player? localPlayer = GetLocalPlayer();
+        if (localPlayer == null)
+        {
+            return null;
+        }
+
+        return payload.Kind switch
+        {
+            TradeDragKind.Potion => TryCreatePotionHolder(TryGetPotionAtSlot(localPlayer, payload.Index)),
+            TradeDragKind.Relic => TryCreateRelicHolder(TryGetRelicAtIndex(localPlayer, payload.Index)),
+            _ => null
+        };
     }
 
     private static VBoxContainer CreateSection(string titleText)
@@ -814,7 +1352,8 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
     private static Control CreatePreviewIconHost()
     {
         MarginContainer host = new();
-        host.CustomMinimumSize = new Vector2(56f, 56f);
+        host.CustomMinimumSize = new Vector2(72f, 72f);
+        host.SizeFlagsHorizontal = SizeFlags.ShrinkCenter;
         host.SizeFlagsVertical = SizeFlags.ShrinkCenter;
         return host;
     }
@@ -833,7 +1372,7 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
                 return;
             }
 
-            NPotionHolder? holder = TryCreatePotionHolder(potion);
+            Control? holder = TryCreatePotionHolder(potion);
             if (holder == null)
             {
                 return;
@@ -869,7 +1408,7 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
         }).CallDeferred();
     }
 
-    private static NPotionHolder? TryCreatePotionHolder(PotionModel? potion)
+    private static Control? TryCreatePotionHolder(PotionModel? potion)
     {
         if (potion == null)
         {
@@ -878,14 +1417,7 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
 
         try
         {
-            NPotionHolder? holder = NPotionHolder.Create(isUsable: false);
-            NPotion? potionNode = NPotion.Create(potion);
-            if (holder == null || potionNode == null)
-            {
-                return null;
-            }
-
-            holder.AddPotion(potionNode);
+            NLabPotionHolder holder = NLabPotionHolder.Create(potion, ModelVisibility.Visible);
             holder.FocusMode = FocusModeEnum.None;
             holder.MouseFilter = MouseFilterEnum.Ignore;
             return holder;
@@ -893,7 +1425,14 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
         catch (Exception ex)
         {
             Log.Warn($"{ModEntry.ModId}: failed to create potion holder for '{SafePotionId(potion)}': {ex.Message}", 2);
-            return null;
+            try
+            {
+                return new TradePotionIconHost(potion);
+            }
+            catch
+            {
+                return null;
+            }
         }
     }
 
@@ -1045,6 +1584,145 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
         catch
         {
             return null;
+        }
+    }
+
+    private enum TradeDragKind
+    {
+        Potion,
+        Relic
+    }
+
+    private sealed class TradeDragPayload
+    {
+        public TradeDragPayload(TradeDragKind kind, int index, string label)
+        {
+            Kind = kind;
+            Index = index;
+            Label = label;
+        }
+
+        public TradeDragKind Kind { get; }
+
+        public int Index { get; }
+
+        public string Label { get; }
+    }
+
+    private sealed class TradeDropTargetPanel : PanelContainer
+    {
+        private readonly NTradeProposalPopup _popup;
+
+        public TradeDropTargetPanel(NTradeProposalPopup popup)
+        {
+            _popup = popup;
+        }
+
+        public override bool _CanDropData(Vector2 atPosition, Variant data)
+        {
+            return _popup.CanAcceptCurrentDrag();
+        }
+
+        public override void _DropData(Vector2 atPosition, Variant data)
+        {
+            _popup.CommitCurrentDrag();
+        }
+    }
+
+    private sealed class TradePotionIconHost : CenterContainer
+    {
+        private readonly PotionModel _potion;
+
+        private bool _built;
+
+        public TradePotionIconHost(PotionModel potion)
+        {
+            _potion = potion;
+            CustomMinimumSize = new Vector2(72f, 72f);
+            Size = new Vector2(72f, 72f);
+            SizeFlagsHorizontal = SizeFlags.ShrinkCenter;
+            SizeFlagsVertical = SizeFlags.ShrinkCenter;
+            MouseFilter = MouseFilterEnum.Ignore;
+        }
+
+        public override void _Ready()
+        {
+            if (_built)
+            {
+                return;
+            }
+
+            _built = true;
+            try
+            {
+                Control icon = CreateFallbackPotionIcon(_potion);
+                icon.MouseFilter = MouseFilterEnum.Ignore;
+                AddChild(icon);
+            }
+            catch (Exception ex)
+            {
+                Log.Warn($"{ModEntry.ModId}: failed to build potion icon for '{SafePotionId(_potion)}': {ex.Message}", 2);
+            }
+        }
+
+        private static Control CreateFallbackPotionIcon(PotionModel potion)
+        {
+            Texture2D? imageTexture = null;
+            Texture2D? outlineTexture = null;
+            try
+            {
+                imageTexture = PreloadManager.Cache.GetTexture2D(potion.ImagePath);
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(potion.OutlinePath))
+                {
+                    outlineTexture = PreloadManager.Cache.GetTexture2D(potion.OutlinePath);
+                }
+            }
+            catch
+            {
+            }
+
+            imageTexture ??= potion.Image;
+            outlineTexture ??= potion.Outline;
+            if (imageTexture == null)
+            {
+                Log.Warn($"{ModEntry.ModId}: potion image missing for '{SafePotionId(potion)}' imagePath='{potion.ImagePath}' outlinePath='{potion.OutlinePath ?? "<null>"}'.", 2);
+            }
+
+            Control root = new()
+            {
+                CustomMinimumSize = new Vector2(64f, 64f),
+                Size = new Vector2(64f, 64f),
+                SizeFlagsHorizontal = SizeFlags.ShrinkCenter,
+                SizeFlagsVertical = SizeFlags.ShrinkCenter,
+                MouseFilter = MouseFilterEnum.Ignore
+            };
+
+            TextureRect outline = new()
+            {
+                Texture = outlineTexture,
+                StretchMode = TextureRect.StretchModeEnum.Scale,
+                MouseFilter = MouseFilterEnum.Ignore
+            };
+            outline.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+            outline.Visible = outlineTexture != null;
+            root.AddChild(outline);
+
+            TextureRect image = new()
+            {
+                Texture = imageTexture,
+                StretchMode = TextureRect.StretchModeEnum.Scale,
+                MouseFilter = MouseFilterEnum.Ignore
+            };
+            image.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+            root.AddChild(image);
+            return root;
         }
     }
 }

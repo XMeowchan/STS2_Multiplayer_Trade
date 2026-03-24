@@ -40,9 +40,9 @@ $content = @"
 
 ## Notes
 
-- Adds native-style multiplayer trading for gold, potions, and relics.
-- Includes GitHub portable-package auto-update support.
-- Includes anonymous telemetry heartbeat support and a public usage-curve Pages payload.
+- Stabilizes the multiplayer trade popup and drag-to-trade flow.
+- Supports trading gold, potions, and relics with native-style UI.
+- Includes single-player dev test coverage for local trade verification.
 "@
 
     Set-Content -LiteralPath $OutputPath -Value $content -Encoding UTF8

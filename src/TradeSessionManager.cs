@@ -264,18 +264,21 @@ internal sealed class TradeSessionManager : IDisposable
     {
         if (_activeSession == null || !_activeSession.Accepted)
         {
+            Log.Warn($"{ModEntry.ModId}: ToggleLocalPotion ignored sessionActive={_activeSession != null} accepted={_activeSession?.Accepted ?? false}.", 2);
             return;
         }
 
         Player? local = GetPlayer(LocalPlayerId);
         if (local == null || !local.CanRemovePotions)
         {
+            Log.Warn($"{ModEntry.ModId}: ToggleLocalPotion ignored localExists={local != null} canRemove={local?.CanRemovePotions ?? false}.", 2);
             return;
         }
 
         PotionModel? potion = local.GetPotionAtSlotIndex(slotIndex);
         if (potion == null)
         {
+            Log.Warn($"{ModEntry.ModId}: ToggleLocalPotion ignored because slot={slotIndex} is empty for player={LocalPlayerId}.", 2);
             return;
         }
 
@@ -300,18 +303,21 @@ internal sealed class TradeSessionManager : IDisposable
     {
         if (_activeSession == null || !_activeSession.Accepted)
         {
+            Log.Warn($"{ModEntry.ModId}: ToggleLocalRelic ignored sessionActive={_activeSession != null} accepted={_activeSession?.Accepted ?? false}.", 2);
             return;
         }
 
         Player? local = GetPlayer(LocalPlayerId);
         if (local == null || relicIndex < 0 || relicIndex >= local.Relics.Count)
         {
+            Log.Warn($"{ModEntry.ModId}: ToggleLocalRelic ignored localExists={local != null} relicIndex={relicIndex} relicCount={local?.Relics.Count ?? -1}.", 2);
             return;
         }
 
         RelicModel relic = local.Relics[relicIndex];
         if (!relic.IsTradable)
         {
+            Log.Warn($"{ModEntry.ModId}: ToggleLocalRelic ignored because relicIndex={relicIndex} is not tradable.", 2);
             return;
         }
 
@@ -340,6 +346,55 @@ internal sealed class TradeSessionManager : IDisposable
         }
 
         ApplyLocalOfferChange(new TradeOfferDraft());
+    }
+
+    public void DevToggleFirstPotion()
+    {
+        if (!IsLocalTestMode || _activeSession == null || !_activeSession.Accepted)
+        {
+            return;
+        }
+
+        Player? local = GetPlayer(LocalPlayerId);
+        PotionModel? potion = local?.Potions.FirstOrDefault();
+        if (local == null || potion == null)
+        {
+            return;
+        }
+
+        int slotIndex = local.GetPotionSlotIndex(potion);
+        bool selected = GetOffer(LocalPlayerId).Potions.Any(item => item.SlotIndex == slotIndex);
+        Log.Info($"{ModEntry.ModId}: dev toggle first potion slot={slotIndex} selected={selected}.", 2);
+        ToggleLocalPotion(slotIndex, !selected);
+    }
+
+    public void DevToggleFirstRelic()
+    {
+        if (!IsLocalTestMode || _activeSession == null || !_activeSession.Accepted)
+        {
+            return;
+        }
+
+        Player? local = GetPlayer(LocalPlayerId);
+        if (local == null)
+        {
+            return;
+        }
+
+        int relicIndex = local.Relics
+            .Select((relic, index) => new { relic, index })
+            .Where(static pair => pair.relic.IsTradable)
+            .Select(static pair => pair.index)
+            .DefaultIfEmpty(-1)
+            .First();
+        if (relicIndex < 0)
+        {
+            return;
+        }
+
+        bool selected = GetOffer(LocalPlayerId).Relics.Any(item => item.RelicIndex == relicIndex);
+        Log.Info($"{ModEntry.ModId}: dev toggle first relic relicIndex={relicIndex} selected={selected}.", 2);
+        ToggleLocalRelic(relicIndex, !selected);
     }
 
     public void ToggleLocalReady()
@@ -1242,9 +1297,46 @@ internal sealed class TradeSessionManager : IDisposable
         }
     }
 
-    private static TradeOfferDraft BuildDefaultDevOffer(Player remotePlayer)
+    private TradeOfferDraft BuildDefaultDevOffer(Player remotePlayer)
     {
-        return new TradeOfferDraft();
+        TradeOfferDraft offer = new();
+
+        Player? localPlayer = GetPlayer(LocalPlayerId);
+        bool localHasOpenPotionSlot = localPlayer?.PotionSlots.Any(static slot => slot == null) == true;
+
+        PotionModel? remotePotion = remotePlayer.Potions.FirstOrDefault();
+        if (localHasOpenPotionSlot && remotePotion != null)
+        {
+            int slotIndex = remotePlayer.GetPotionSlotIndex(remotePotion);
+            if (slotIndex >= 0)
+            {
+                offer.Potions.Add(new TradePotionSelection
+                {
+                    SlotIndex = slotIndex,
+                    PotionId = remotePotion.Id,
+                    Fingerprint = TradeFingerprintHelper.ForPotion(remotePotion, slotIndex)
+                });
+            }
+        }
+
+        int relicIndex = remotePlayer.Relics
+            .Select((relic, index) => new { relic, index })
+            .Where(static pair => pair.relic.IsTradable)
+            .Select(static pair => pair.index)
+            .DefaultIfEmpty(-1)
+            .First();
+        if (relicIndex >= 0)
+        {
+            RelicModel relic = remotePlayer.Relics[relicIndex];
+            offer.Relics.Add(new TradeRelicSelection
+            {
+                RelicIndex = relicIndex,
+                RelicId = relic.Id,
+                Fingerprint = TradeFingerprintHelper.ForRelic(relic)
+            });
+        }
+
+        return offer;
     }
 
     internal Player? FindPlayer(ulong playerId)
