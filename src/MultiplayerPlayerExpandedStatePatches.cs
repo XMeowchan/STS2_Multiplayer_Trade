@@ -38,43 +38,19 @@ internal static class MultiplayerPlayerExpandedStateReadyPatch
         button.Name = TradeButtonName;
         controlParent.AddChild(button);
         controlParent.MoveChild(button, backButton.GetIndex() + 1);
-        button.Position = backButton.Position + new Vector2(backButton.Size.X + 18f, 0f);
-        button.Size = new Vector2(140f, Math.Max(36f, backButton.Size.Y));
+        button.Position = backButton.Position + new Vector2(backButton.Size.X + 14f, 0f);
+        button.Size = new Vector2(124f, Math.Max(38f, backButton.Size.Y));
     }
 
     private static Button CreateTradeButton(Player remotePlayer, string reason)
     {
         bool canTrade = TradeRuntime.TryGetTradeAvailability(remotePlayer, out string availabilityReason);
-        Button button = new()
-        {
-            Text = TradeUiText.TradeButton,
-            FocusMode = Control.FocusModeEnum.All,
-            MouseDefaultCursorShape = Control.CursorShape.PointingHand,
-            Disabled = !canTrade,
-            TooltipText = canTrade ? string.Empty : availabilityReason
-        };
-        button.AddThemeColorOverride("font_color", new Color(0.95f, 0.93f, 0.88f, 1.0f));
-        button.AddThemeStyleboxOverride("normal", CreateButtonStyle(new Color(0.17f, 0.20f, 0.26f, 0.98f), new Color(0.44f, 0.53f, 0.70f, 0.88f)));
-        button.AddThemeStyleboxOverride("hover", CreateButtonStyle(new Color(0.22f, 0.26f, 0.34f, 1.0f), new Color(0.70f, 0.80f, 0.94f, 1.0f)));
-        button.AddThemeStyleboxOverride("pressed", CreateButtonStyle(new Color(0.11f, 0.15f, 0.20f, 1.0f), new Color(0.78f, 0.86f, 0.96f, 1.0f)));
+        Button button = TradeUiSkin.CreateProceedButton(TradeUiText.TradeButton, new Vector2(124f, 38f));
+        button.Disabled = !canTrade;
+        button.TooltipText = canTrade ? string.Empty : availabilityReason;
         button.Pressed += () => TradeRuntime.OpenTrade(remotePlayer);
+        TradeUiSkin.RefreshProceedButton(button);
         return button;
-    }
-
-    private static StyleBoxFlat CreateButtonStyle(Color background, Color border)
-    {
-        StyleBoxFlat style = new()
-        {
-            BgColor = background,
-            BorderColor = border
-        };
-        style.SetBorderWidthAll(1);
-        style.SetCornerRadiusAll(10);
-        style.ContentMarginLeft = 12;
-        style.ContentMarginRight = 12;
-        style.ContentMarginTop = 7;
-        style.ContentMarginBottom = 7;
-        return style;
     }
 
     private static Button? FindTradeButton(NMultiplayerPlayerExpandedState screen)

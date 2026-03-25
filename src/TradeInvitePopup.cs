@@ -3,6 +3,7 @@ using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
 using MegaCrit.Sts2.Core.Nodes.Multiplayer;
 using MegaCrit.Sts2.Core.Nodes.Screens.ScreenContext;
+using MegaCrit.Sts2.addons.mega_text;
 
 namespace Sts2MultiplayerTrade;
 
@@ -73,7 +74,7 @@ internal sealed class NTradeInvitePopup : Control, IScreenContext
 
         PanelContainer shell = new();
         shell.CustomMinimumSize = new Vector2(520f, 0f);
-        shell.AddThemeStyleboxOverride("panel", CreatePanelStyle(new Color(0.11f, 0.13f, 0.17f, 0.98f), new Color(0.52f, 0.60f, 0.74f, 0.85f)));
+        shell.AddThemeStyleboxOverride("panel", CreatePanelStyle(new Color(0.92f, 0.93f, 0.98f, 0.96f)));
         center.AddChild(shell);
 
         MarginContainer margin = new();
@@ -87,18 +88,28 @@ internal sealed class NTradeInvitePopup : Control, IScreenContext
         stack.AddThemeConstantOverride("separation", 14);
         margin.AddChild(stack);
 
-        Label title = new() { Text = _titleText };
+        MegaLabel title = new()
+        {
+            Text = _titleText,
+            AutoSizeEnabled = false
+        };
         title.AddThemeFontSizeOverride("font_size", 22);
         title.AddThemeColorOverride("font_color", new Color(0.95f, 0.93f, 0.88f, 1.0f));
         stack.AddChild(title);
 
-        Label body = new() { Text = _bodyText, AutowrapMode = TextServer.AutowrapMode.WordSmart };
+        MegaLabel body = new()
+        {
+            Text = _bodyText,
+            AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            AutoSizeEnabled = false
+        };
         body.AddThemeFontSizeOverride("font_size", 15);
         body.AddThemeColorOverride("font_color", new Color(0.79f, 0.82f, 0.88f, 1.0f));
         stack.AddChild(body);
 
         HBoxContainer actions = new();
-        actions.Alignment = BoxContainer.AlignmentMode.End;
+        actions.Alignment = BoxContainer.AlignmentMode.Center;
+        actions.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         actions.AddThemeConstantOverride("separation", 12);
         stack.AddChild(actions);
 
@@ -115,34 +126,12 @@ internal sealed class NTradeInvitePopup : Control, IScreenContext
 
     private static Button CreateActionButton(string text)
     {
-        Button button = new()
-        {
-            Text = text,
-            FocusMode = FocusModeEnum.All,
-            MouseDefaultCursorShape = CursorShape.PointingHand,
-            CustomMinimumSize = new Vector2(120f, 38f)
-        };
-        button.AddThemeStyleboxOverride("normal", CreatePanelStyle(new Color(0.18f, 0.21f, 0.27f, 0.98f), new Color(0.45f, 0.52f, 0.64f, 0.85f)));
-        button.AddThemeStyleboxOverride("hover", CreatePanelStyle(new Color(0.24f, 0.28f, 0.35f, 1.0f), new Color(0.66f, 0.76f, 0.90f, 1.0f)));
-        button.AddThemeStyleboxOverride("pressed", CreatePanelStyle(new Color(0.13f, 0.16f, 0.21f, 1.0f), new Color(0.76f, 0.84f, 0.94f, 1.0f)));
-        button.AddThemeColorOverride("font_color", new Color(0.96f, 0.94f, 0.90f, 1.0f));
-        return button;
+        return TradeUiSkin.CreateProceedButton(text, new Vector2(122f, 40f));
     }
 
-    private static StyleBoxFlat CreatePanelStyle(Color background, Color border)
+    private static StyleBoxTexture CreatePanelStyle(Color tint)
     {
-        StyleBoxFlat style = new()
-        {
-            BgColor = background,
-            BorderColor = border
-        };
-        style.SetBorderWidthAll(1);
-        style.SetCornerRadiusAll(12);
-        style.ContentMarginLeft = 12;
-        style.ContentMarginRight = 12;
-        style.ContentMarginTop = 8;
-        style.ContentMarginBottom = 8;
-        return style;
+        return TradeUiSkin.CreateHoverTipStyle(tint, 18f, 16f, 18f, 16f);
     }
 
     private void Finish(bool accepted)

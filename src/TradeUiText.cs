@@ -50,7 +50,7 @@ internal static class TradeUiText
 
     public static string CombatReason => IsChineseLocale() ? "战斗中无法发起交易。" : "Trading is unavailable during combat.";
 
-    public static string LocalOnlyReason => IsChineseLocale() ? "单人或伪联机场景不支持交易。" : "Trading is unavailable in single-player or fake multiplayer.";
+    public static string LocalOnlyReason => IsChineseLocale() ? "单人或伪联机环境不支持交易。" : "Trading is unavailable in single-player or fake multiplayer.";
 
     public static string AcceptedStatus(string remotePlayerName)
         => IsChineseLocale() ? $"已与 {remotePlayerName} 建立交易。" : $"Trade session active with {remotePlayerName}.";

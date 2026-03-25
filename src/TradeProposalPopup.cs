@@ -9,6 +9,7 @@ using MegaCrit.Sts2.Core.Nodes.Potions;
 using MegaCrit.Sts2.Core.Nodes.Relics;
 using MegaCrit.Sts2.Core.Nodes.Screens.ScreenContext;
 using MegaCrit.Sts2.Core.Nodes.Screens.PotionLab;
+using MegaCrit.Sts2.addons.mega_text;
 
 namespace Sts2MultiplayerTrade;
 
@@ -170,23 +171,23 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
         AddChild(_dragCaptureLayer);
 
         PanelContainer shell = new();
-        shell.CustomMinimumSize = new Vector2(1220f, 760f);
+        shell.CustomMinimumSize = new Vector2(1320f, 800f);
         shell.SizeFlagsHorizontal = SizeFlags.ShrinkCenter;
         shell.SizeFlagsVertical = SizeFlags.ShrinkCenter;
-        shell.AddThemeStyleboxOverride("panel", CreatePanelStyle(new Color(0.10f, 0.12f, 0.16f, 0.98f), new Color(0.56f, 0.64f, 0.76f, 0.95f), 14));
+        shell.AddThemeStyleboxOverride("panel", CreatePanelStyle(new Color(0.90f, 0.92f, 0.98f, 0.96f), new Color(0.94f, 0.85f, 0.64f, 0.98f), 14));
         center.AddChild(shell);
 
         MarginContainer margin = CreateMargin(20, 18);
         shell.AddChild(margin);
 
         VBoxContainer layout = new();
-        layout.CustomMinimumSize = new Vector2(1160f, 720f);
+        layout.CustomMinimumSize = new Vector2(1260f, 748f);
         layout.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         layout.SizeFlagsVertical = SizeFlags.ExpandFill;
         layout.AddThemeConstantOverride("separation", 16);
         margin.AddChild(layout);
 
-        _headerLabel = CreateTitleLabel(string.Empty, 26);
+        _headerLabel = CreateTitleLabel(string.Empty, 34);
         layout.AddChild(_headerLabel);
 
         HBoxContainer columns = new();
@@ -195,13 +196,14 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
         columns.AddThemeConstantOverride("separation", 14);
         layout.AddChild(columns);
 
-        _localOfferRoot = CreateOfferColumn(columns, TradeUiText.YourOffer, 420f);
+        _localOfferRoot = CreateOfferColumn(columns, TradeUiText.YourOffer, 430f);
         CreateStatusColumn(columns);
-        _remoteOfferRoot = CreateOfferColumn(columns, TradeUiText.TheirOffer, 420f);
+        _remoteOfferRoot = CreateOfferColumn(columns, TradeUiText.TheirOffer, 430f);
 
         HBoxContainer actions = new();
-        actions.Alignment = BoxContainer.AlignmentMode.End;
-        actions.AddThemeConstantOverride("separation", 10);
+        actions.Alignment = BoxContainer.AlignmentMode.Center;
+        actions.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        actions.AddThemeConstantOverride("separation", 12);
         layout.AddChild(actions);
 
         _cancelButton = CreateActionButton(TradeUiText.Cancel, destructive: true);
@@ -269,20 +271,27 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
         stack.AddThemeConstantOverride("separation", 10);
         margin.AddChild(stack);
 
-        stack.AddChild(CreateTitleLabel(title, 18));
+        stack.AddChild(CreateTitleLabel(title, 22));
+
+        ScrollContainer scroll = new();
+        scroll.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        scroll.SizeFlagsVertical = SizeFlags.ExpandFill;
+        scroll.FollowFocus = true;
+        stack.AddChild(scroll);
 
         VBoxContainer content = new();
         content.SizeFlagsHorizontal = SizeFlags.ExpandFill;
-        content.SizeFlagsVertical = SizeFlags.ExpandFill;
+        content.SizeFlagsVertical = SizeFlags.ShrinkBegin;
+        content.CustomMinimumSize = new Vector2(minWidth - 56f, 0f);
         content.AddThemeConstantOverride("separation", 10);
-        stack.AddChild(content);
+        scroll.AddChild(content);
         return content;
     }
 
     private void CreateStatusColumn(HBoxContainer parent)
     {
         PanelContainer shell = new();
-        shell.CustomMinimumSize = new Vector2(260f, 0f);
+        shell.CustomMinimumSize = new Vector2(380f, 0f);
         shell.SizeFlagsHorizontal = SizeFlags.Fill;
         shell.SizeFlagsVertical = SizeFlags.ExpandFill;
         shell.AddThemeStyleboxOverride("panel", CreatePanelStyle(new Color(0.13f, 0.15f, 0.20f, 0.92f), new Color(0.36f, 0.42f, 0.52f, 0.72f), 12));
@@ -297,15 +306,15 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
         stack.AddThemeConstantOverride("separation", 10);
         margin.AddChild(stack);
 
-        stack.AddChild(CreateTitleLabel(TradeUiText.Status, 18));
+        stack.AddChild(CreateTitleLabel(TradeUiText.Status, 22));
 
-        _statusLabel = CreateBodyLabel(string.Empty, 15);
+        _statusLabel = CreateBodyLabel(string.Empty, 18);
         _statusLabel.AutowrapMode = TextServer.AutowrapMode.WordSmart;
         _statusLabel.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         _statusLabel.SizeFlagsVertical = SizeFlags.ShrinkBegin;
         stack.AddChild(_statusLabel);
 
-        stack.AddChild(CreateTitleLabel(TradeUiText.IsChineseLocale() ? "拖到这里加入交易" : "Drop Zone", 16));
+        stack.AddChild(CreateTitleLabel(TradeUiText.IsChineseLocale() ? "拖到这里加入交易" : "Drop Zone", 20));
 
         _dropTargetPanel = new TradeDropTargetPanel(this);
         _dropTargetPanel.SizeFlagsHorizontal = SizeFlags.ExpandFill;
@@ -314,7 +323,8 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
         _dropTargetPanel.MouseFilter = MouseFilterEnum.Stop;
         stack.AddChild(_dropTargetPanel);
 
-        MarginContainer dropMargin = CreateMargin(10, 10);
+        MarginContainer dropMargin = CreateMargin(12, 12);
+        dropMargin.AddThemeConstantOverride("margin_right", 28);
         dropMargin.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         dropMargin.SizeFlagsVertical = SizeFlags.ExpandFill;
         _dropTargetPanel.AddChild(dropMargin);
@@ -325,16 +335,23 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
         dropStack.AddThemeConstantOverride("separation", 10);
         dropMargin.AddChild(dropStack);
 
-        _dropHintLabel = CreateBodyLabel(string.Empty, 14);
+        _dropHintLabel = CreateBodyLabel(string.Empty, 16);
         _dropHintLabel.AutowrapMode = TextServer.AutowrapMode.WordSmart;
         _dropHintLabel.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         dropStack.AddChild(_dropHintLabel);
 
+        ScrollContainer previewScroll = new();
+        previewScroll.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        previewScroll.SizeFlagsVertical = SizeFlags.ExpandFill;
+        previewScroll.FollowFocus = true;
+        dropStack.AddChild(previewScroll);
+
         _dropTargetPreviewRoot = new VBoxContainer();
         _dropTargetPreviewRoot.SizeFlagsHorizontal = SizeFlags.ExpandFill;
-        _dropTargetPreviewRoot.SizeFlagsVertical = SizeFlags.ExpandFill;
+        _dropTargetPreviewRoot.SizeFlagsVertical = SizeFlags.ShrinkBegin;
+        _dropTargetPreviewRoot.CustomMinimumSize = new Vector2(0f, 0f);
         _dropTargetPreviewRoot.AddThemeConstantOverride("separation", 10);
-        dropStack.AddChild(_dropTargetPreviewRoot);
+        previewScroll.AddChild(_dropTargetPreviewRoot);
 
         UpdateDropTargetVisuals();
     }
@@ -404,11 +421,15 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
             _dropTargetEditable = accepted;
             UpdateDropTargetVisuals();
 
-            _readyButton!.Text = localReady ? TradeUiText.Unready : TradeUiText.Ready;
+            TradeUiSkin.SetProceedButtonText(_readyButton!, localReady ? TradeUiText.Unready : TradeUiText.Ready);
             _readyButton.Disabled = !accepted;
             _resetButton!.Disabled = !accepted;
             _confirmButton!.Disabled = !canCommit;
             _cancelButton!.Disabled = false;
+            TradeUiSkin.RefreshProceedButton(_readyButton);
+            TradeUiSkin.RefreshProceedButton(_resetButton);
+            TradeUiSkin.RefreshProceedButton(_confirmButton);
+            TradeUiSkin.RefreshProceedButton(_cancelButton);
 
             _focusChain.Add(_cancelButton);
             _focusChain.Add(_resetButton);
@@ -466,9 +487,9 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
             Editable = editable,
             FocusMode = FocusModeEnum.All,
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
-            CustomMinimumSize = new Vector2(140f, 36f)
+            CustomMinimumSize = new Vector2(170f, 44f)
         };
-        ApplyControlFont(spinBox, 16);
+        ApplyControlFont(spinBox, 18);
         spinBox.ValueChanged += value =>
         {
             if (!_refreshing)
@@ -479,7 +500,7 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
         row.AddChild(spinBox);
         _focusChain.Add(spinBox);
 
-        row.AddChild(CreateBodyLabel($"/ {localPlayer.Gold}", 15));
+        row.AddChild(CreateBodyLabel($"/ {localPlayer.Gold}", 17));
         return section;
     }
 
@@ -739,8 +760,20 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
         return margin;
     }
 
-    private static StyleBoxFlat CreatePanelStyle(Color background, Color border, int radius)
+    private static StyleBox CreatePanelStyle(Color background, Color border, int radius)
     {
+        if (radius >= 12)
+        {
+            Color tint = background.Lightened(0.45f).Lerp(border.Lightened(0.20f), 0.28f);
+            tint.A = Mathf.Max(background.A, border.A);
+            return TradeUiSkin.CreateHoverTipStyle(
+                tint,
+                radius >= 14 ? 26f : 20f,
+                radius >= 14 ? 24f : 18f,
+                radius >= 14 ? 26f : 20f,
+                radius >= 14 ? 22f : 16f);
+        }
+
         StyleBoxFlat style = new()
         {
             BgColor = background,
@@ -757,29 +790,21 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
 
     private static Button CreateActionButton(string text, bool destructive, bool emphasized = false)
     {
-        Color normal = destructive
-            ? new Color(0.26f, 0.14f, 0.16f, 0.98f)
-            : emphasized
-                ? new Color(0.21f, 0.25f, 0.33f, 0.98f)
-                : new Color(0.18f, 0.21f, 0.27f, 0.98f);
-        Color border = destructive
-            ? new Color(0.78f, 0.40f, 0.44f, 0.90f)
-            : emphasized
-                ? new Color(0.82f, 0.90f, 0.98f, 0.95f)
-                : new Color(0.48f, 0.56f, 0.68f, 0.85f);
+        Vector2 size = emphasized
+            ? new Vector2(176f, 44f)
+            : destructive
+                ? new Vector2(132f, 44f)
+                : new Vector2(148f, 44f);
 
         Button button = new()
         {
             Text = text,
             FocusMode = FocusModeEnum.All,
             MouseDefaultCursorShape = CursorShape.PointingHand,
-            CustomMinimumSize = new Vector2(150f, 42f)
+            CustomMinimumSize = size,
+            ClipText = true
         };
-        ApplyControlFont(button, 16);
-        button.AddThemeStyleboxOverride("normal", CreatePanelStyle(normal, border, 10));
-        button.AddThemeStyleboxOverride("hover", CreatePanelStyle(normal.Lightened(0.15f), border.Lightened(0.10f), 10));
-        button.AddThemeStyleboxOverride("pressed", CreatePanelStyle(normal.Darkened(0.12f), border, 10));
-        button.AddThemeColorOverride("font_color", new Color(0.97f, 0.95f, 0.91f, 1f));
+        ApplyControlFont(button, 17);
         return button;
     }
 
@@ -1245,7 +1270,7 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
         {
             MouseFilter = MouseFilterEnum.Ignore
         };
-        preview.AddThemeStyleboxOverride("panel", CreatePanelStyle(new Color(0.18f, 0.21f, 0.27f, 0.98f), new Color(0.78f, 0.86f, 0.96f, 0.95f), 10));
+        preview.AddThemeStyleboxOverride("panel", CreatePanelStyle(new Color(0.16f, 0.19f, 0.25f, 0.98f), new Color(0.50f, 0.58f, 0.70f, 0.85f), 10));
 
         MarginContainer margin = CreateMargin(10, 6);
         margin.MouseFilter = MouseFilterEnum.Ignore;
@@ -1293,7 +1318,7 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
     {
         VBoxContainer section = new();
         section.AddThemeConstantOverride("separation", 8);
-        section.AddChild(CreateTitleLabel(titleText, 16));
+        section.AddChild(CreateTitleLabel(titleText, 19));
         return section;
     }
 
@@ -1306,10 +1331,13 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
 
     private static Label CreateTitleLabel(string text, int fontSize)
     {
-        Label label = new()
+        MegaLabel label = new()
         {
-            Text = text
+            Text = text,
+            AutoSizeEnabled = false,
+            AutowrapMode = TextServer.AutowrapMode.WordSmart
         };
+        label.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         ApplyControlFont(label, fontSize);
         label.AddThemeColorOverride("font_color", new Color(0.95f, 0.94f, 0.90f, 1f));
         return label;
@@ -1317,11 +1345,14 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
 
     private static Label CreateBodyLabel(string text, int fontSize)
     {
-        Label label = new()
+        MegaLabel label = new()
         {
             Text = text,
-            VerticalAlignment = VerticalAlignment.Center
+            VerticalAlignment = VerticalAlignment.Center,
+            AutoSizeEnabled = false,
+            AutowrapMode = TextServer.AutowrapMode.WordSmart
         };
+        label.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         ApplyControlFont(label, fontSize);
         label.AddThemeColorOverride("font_color", new Color(0.90f, 0.90f, 0.94f, 1f));
         return label;
@@ -1329,7 +1360,7 @@ internal sealed class NTradeProposalPopup : Control, IScreenContext
 
     private static Label CreateEmptyLabel(string text)
     {
-        Label label = CreateBodyLabel(text, 14);
+        Label label = CreateBodyLabel(text, 16);
         label.AddThemeColorOverride("font_color", new Color(0.72f, 0.76f, 0.82f, 1f));
         return label;
     }

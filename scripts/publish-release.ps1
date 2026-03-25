@@ -21,6 +21,27 @@ function Get-Manifest {
     return Get-ModManifest -ProjectRoot $projectRoot
 }
 
+function Resolve-GitHubCli {
+    $candidates = @()
+
+    $ghCommand = Get-Command gh -ErrorAction SilentlyContinue
+    if ($ghCommand) {
+        $candidates += $ghCommand.Source
+    }
+
+    $candidates += @(
+        (Join-Path $env:LOCALAPPDATA "Programs\GitHub CLI\gh.exe"),
+        "C:\Program Files\GitHub CLI\gh.exe"
+    )
+
+    $resolved = @($candidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique)
+    if (-not $resolved) {
+        throw "GitHub CLI is required for -Upload in this simplified release flow."
+    }
+
+    return $resolved[0]
+}
+
 function New-ReleaseNotes {
     param(
         [Parameter(Mandatory)][string]$Version,
@@ -40,9 +61,9 @@ $content = @"
 
 ## Notes
 
-- Stabilizes the multiplayer trade popup and drag-to-trade flow.
-- Supports trading gold, potions, and relics with native-style UI.
-- Includes single-player dev test coverage for local trade verification.
+- Polishes the multiplayer trade UI layout, typography, and overflow handling.
+- Uses native-style trade panels and stable default action buttons.
+- Supports trading gold, potions, and relics in Slay the Spire 2 multiplayer.
 "@
 
     Set-Content -LiteralPath $OutputPath -Value $content -Encoding UTF8
@@ -114,14 +135,11 @@ if ([string]::IsNullOrWhiteSpace($Repo)) {
 }
 
 $tagName = "v$version"
-$gh = Get-Command gh -ErrorAction SilentlyContinue
-if (-not $gh) {
-    throw "GitHub CLI is required for -Upload in this simplified release flow."
-}
+$gh = Resolve-GitHubCli
 
-& gh release view $tagName --repo $Repo *> $null
+& $gh release view $tagName --repo $Repo *> $null
 if ($LASTEXITCODE -eq 0) {
-    & gh release upload $tagName $portablePath $installerPath --clobber --repo $Repo
+    & $gh release upload $tagName $portablePath $installerPath --clobber --repo $Repo
     if ($LASTEXITCODE -ne 0) { throw "gh release upload failed." }
     return
 }
@@ -135,7 +153,7 @@ $args = @(
 if ($Prerelease) { $args += "--prerelease" }
 $args += @($portablePath, $installerPath)
 
-& gh @args
+& $gh @args
 if ($LASTEXITCODE -ne 0) {
     throw "gh release create failed."
 }
