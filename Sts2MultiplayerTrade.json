@@ -3,7 +3,7 @@
   "name": "STS2 Multiplayer Trade",
   "author": "XMeow",
   "description": "为《Slay the Spire 2》联机提供玩家之间的金币、药水与遗物交易。 Adds native-style player-to-player trading for gold, potions, and relics in Slay the Spire 2 multiplayer.",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "has_pck": true,
   "has_dll": true,
   "affects_gameplay": true

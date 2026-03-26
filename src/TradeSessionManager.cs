@@ -28,6 +28,10 @@ internal sealed class TradeSessionManager : IDisposable
 
     private TradeSessionState? _activeSession;
 
+    private int _stateChangedQueued;
+
+    private int _multiplayerHudRefreshQueued;
+
     public TradeSessionManager(RunState runState, ModConfig config, Player? devRemotePlayer = null)
     {
         _runState = runState;
@@ -785,6 +789,7 @@ internal sealed class TradeSessionManager : IDisposable
         {
             RunManager.Instance.NetService.SendMessage(applied);
         }
+
         CloseSessionLocally(string.Empty);
     }
 
@@ -945,6 +950,8 @@ internal sealed class TradeSessionManager : IDisposable
                 await RelicCmd.Obtain(clonedRelic, target, targetIndex).ConfigureAwait(false);
             }
         }
+
+        QueueMultiplayerHudRefresh();
     }
 
     private bool TryBuildCommitPlan(TradeSessionState session, out TradeCommitPlan plan, out string reason)
@@ -1148,22 +1155,32 @@ internal sealed class TradeSessionManager : IDisposable
 
     private void NotifyStateChanged()
     {
-        Delegate[] handlers = StateChanged?.GetInvocationList() ?? Array.Empty<Delegate>();
-        foreach (Action handler in handlers.OfType<Action>())
+        if (System.Threading.Interlocked.Exchange(ref _stateChangedQueued, 1) == 1)
         {
-            try
-            {
-                handler();
-            }
-            catch (ObjectDisposedException)
-            {
-                StateChanged -= handler;
-            }
-            catch (InvalidOperationException ex) when (ex.Message.Contains("disposed", StringComparison.OrdinalIgnoreCase))
-            {
-                StateChanged -= handler;
-            }
+            return;
         }
+
+        Callable.From(() =>
+        {
+            System.Threading.Interlocked.Exchange(ref _stateChangedQueued, 0);
+
+            Delegate[] handlers = StateChanged?.GetInvocationList() ?? Array.Empty<Delegate>();
+            foreach (Action handler in handlers.OfType<Action>())
+            {
+                try
+                {
+                    handler();
+                }
+                catch (ObjectDisposedException)
+                {
+                    StateChanged -= handler;
+                }
+                catch (InvalidOperationException ex) when (ex.Message.Contains("disposed", StringComparison.OrdinalIgnoreCase))
+                {
+                    StateChanged -= handler;
+                }
+            }
+        }).CallDeferred();
     }
 
     private void SendMessage<T>(T message) where T : INetMessage
@@ -1184,29 +1201,129 @@ internal sealed class TradeSessionManager : IDisposable
         }
 
         _activeSession = null;
-        ClearTradeUi();
+        Callable.From(() =>
+        {
+            ClearTradeUi();
+            QueueMultiplayerHudRefresh();
+        }).CallDeferred();
         NotifyStateChanged();
     }
 
     private void EnsureProposalPopup(ulong remotePlayerId)
     {
-        if (NGame.Instance?.GetChildren().OfType<NTradeProposalPopup>().FirstOrDefault() is NTradeProposalPopup existing
-            && existing.RemotePlayerId == remotePlayerId)
+        Callable.From(() =>
         {
-            Log.Info($"{ModEntry.ModId}: trade popup already open for player {remotePlayerId}.", 2);
+            if (NGame.Instance?.GetChildren().OfType<NTradeProposalPopup>().FirstOrDefault() is NTradeProposalPopup existing
+                && existing.RemotePlayerId == remotePlayerId)
+            {
+                Log.Info($"{ModEntry.ModId}: trade popup already open for player {remotePlayerId}.", 2);
+                return;
+            }
+
+            if (NGame.Instance == null)
+            {
+                Log.Warn($"{ModEntry.ModId}: NGame.Instance is null; cannot open trade popup.", 2);
+                return;
+            }
+
+            ClearTradeUi();
+            NTradeProposalPopup popup = NTradeProposalPopup.Create(this, remotePlayerId);
+            Log.Info($"{ModEntry.ModId}: opening trade proposal popup for player {remotePlayerId}.", 2);
+            NGame.Instance.AddChildSafely(popup);
+        }).CallDeferred();
+    }
+
+    private void QueueMultiplayerHudRefresh()
+    {
+        if (System.Threading.Interlocked.Exchange(ref _multiplayerHudRefreshQueued, 1) == 1)
+        {
             return;
         }
 
-        if (NGame.Instance == null)
+        Callable.From(() =>
         {
-            Log.Warn($"{ModEntry.ModId}: NGame.Instance is null; cannot open trade popup.", 2);
+            System.Threading.Interlocked.Exchange(ref _multiplayerHudRefreshQueued, 0);
+            RefreshMultiplayerHudLayout();
+        }).CallDeferred();
+    }
+
+    private static void RefreshMultiplayerHudLayout()
+    {
+        if (Engine.GetMainLoop() is not SceneTree sceneTree || sceneTree.Root == null)
+        {
             return;
         }
 
-        ClearTradeUi();
-        NTradeProposalPopup popup = NTradeProposalPopup.Create(this, remotePlayerId);
-        Log.Info($"{ModEntry.ModId}: opening trade proposal popup for player {remotePlayerId}.", 2);
-        NGame.Instance.AddChildSafely(popup);
+        foreach (Node node in EnumerateNodes(sceneTree.Root))
+        {
+            if (!IsMultiplayerLayoutNode(node))
+            {
+                continue;
+            }
+
+            if (node is Container container)
+            {
+                container.QueueSort();
+            }
+
+            if (node is CanvasItem canvasItem)
+            {
+                canvasItem.QueueRedraw();
+            }
+
+            TryInvokeParameterless(node, "RefreshLayout");
+            TryInvokeParameterless(node, "UpdateLayout");
+            TryInvokeParameterless(node, "UpdateNavigation");
+            TryInvokeParameterless(node, "RefreshConnectedState");
+        }
+    }
+
+    private static IEnumerable<Node> EnumerateNodes(Node root)
+    {
+        yield return root;
+
+        foreach (Node child in root.GetChildren())
+        {
+            foreach (Node descendant in EnumerateNodes(child))
+            {
+                yield return descendant;
+            }
+        }
+    }
+
+    private static bool IsMultiplayerLayoutNode(Node node)
+    {
+        string typeName = node.GetType().Name;
+        string nodeName = node.Name.ToString();
+
+        return typeName.Contains("MultiplayerPlayer", StringComparison.OrdinalIgnoreCase)
+            || typeName.Contains("PlayerState", StringComparison.OrdinalIgnoreCase)
+            || nodeName.Contains("RelicContainer", StringComparison.OrdinalIgnoreCase)
+            || nodeName.Contains("PotionContainer", StringComparison.OrdinalIgnoreCase)
+            || nodeName.Contains("CardContainer", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void TryInvokeParameterless(Node node, string methodName)
+    {
+        System.Reflection.MethodInfo? method = node.GetType().GetMethod(
+            methodName,
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic,
+            binder: null,
+            types: Type.EmptyTypes,
+            modifiers: null);
+
+        if (method == null)
+        {
+            return;
+        }
+
+        try
+        {
+            method.Invoke(node, null);
+        }
+        catch
+        {
+        }
     }
 
     private static void ClearTradeUi()
