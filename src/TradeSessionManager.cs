@@ -1242,9 +1242,33 @@ internal sealed class TradeSessionManager : IDisposable
 
         Callable.From(() =>
         {
-            System.Threading.Interlocked.Exchange(ref _multiplayerHudRefreshQueued, 0);
             RefreshMultiplayerHudLayout();
+            ScheduleAdditionalHudRefreshPasses(5);
         }).CallDeferred();
+    }
+
+    private void ScheduleAdditionalHudRefreshPasses(int remainingPasses)
+    {
+        if (Engine.GetMainLoop() is not SceneTree sceneTree)
+        {
+            System.Threading.Interlocked.Exchange(ref _multiplayerHudRefreshQueued, 0);
+            return;
+        }
+
+        void OnProcessFrame()
+        {
+            RefreshMultiplayerHudLayout();
+            remainingPasses -= 1;
+            if (remainingPasses > 0)
+            {
+                return;
+            }
+
+            sceneTree.ProcessFrame -= OnProcessFrame;
+            System.Threading.Interlocked.Exchange(ref _multiplayerHudRefreshQueued, 0);
+        }
+
+        sceneTree.ProcessFrame += OnProcessFrame;
     }
 
     private static void RefreshMultiplayerHudLayout()
@@ -1266,6 +1290,11 @@ internal sealed class TradeSessionManager : IDisposable
                 container.QueueSort();
             }
 
+            if (node is Control control)
+            {
+                control.ResetSize();
+            }
+
             if (node is CanvasItem canvasItem)
             {
                 canvasItem.QueueRedraw();
@@ -1275,6 +1304,9 @@ internal sealed class TradeSessionManager : IDisposable
             TryInvokeParameterless(node, "UpdateLayout");
             TryInvokeParameterless(node, "UpdateNavigation");
             TryInvokeParameterless(node, "RefreshConnectedState");
+            TryInvokeParameterless(node, "RefreshFocusState");
+            TryInvokeParameterless(node, "UpdateBounds");
+            TryInvokeParameterless(node, "UpdateHighlightedState");
         }
     }
 
@@ -1298,9 +1330,11 @@ internal sealed class TradeSessionManager : IDisposable
 
         return typeName.Contains("MultiplayerPlayer", StringComparison.OrdinalIgnoreCase)
             || typeName.Contains("PlayerState", StringComparison.OrdinalIgnoreCase)
+            || typeName.Contains("RemotePlayer", StringComparison.OrdinalIgnoreCase)
             || nodeName.Contains("RelicContainer", StringComparison.OrdinalIgnoreCase)
             || nodeName.Contains("PotionContainer", StringComparison.OrdinalIgnoreCase)
-            || nodeName.Contains("CardContainer", StringComparison.OrdinalIgnoreCase);
+            || nodeName.Contains("CardContainer", StringComparison.OrdinalIgnoreCase)
+            || nodeName.Contains("Name", StringComparison.OrdinalIgnoreCase);
     }
 
     private static void TryInvokeParameterless(Node node, string methodName)
