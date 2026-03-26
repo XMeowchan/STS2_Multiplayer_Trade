@@ -33,7 +33,7 @@ internal sealed class ModConfig
     public bool DevTestModeEnabled { get; set; }
 
     [JsonPropertyName("mod_update_enabled")]
-    public bool ModUpdateEnabled { get; set; }
+    public bool ModUpdateEnabled { get; set; } = true;
 
     [JsonPropertyName("mod_update_github_repo")]
     public string ModUpdateGithubRepo { get; set; } = "XMeowchan/STS2_Multiplayer_Trade";
